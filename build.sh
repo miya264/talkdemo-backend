@@ -1,8 +1,11 @@
 #!/bin/bash
 
-# Update and install dependencies
+# システムのアップデートと PortAudio のインストール
 apt-get update && apt-get install -y portaudio19-dev
 
-# Install Python dependencies
+# 確認用のログ出力（重要！）
+dpkg -l | grep portaudio
+
+# Python のパッケージをインストール
 pip install --upgrade pip
 pip install -r requirements.txt
