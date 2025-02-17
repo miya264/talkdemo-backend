@@ -1,0 +1,22 @@
+# Python関連
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.env
+.env.example
+
+# VSCode関連（VSCodeを使用している場合）
+.vscode/
+
+# macOS関連
+.DS_Store
+
+# Docker関連
+*.log
+docker-compose.override.yml
+
+# Railway関連
+railway.json
