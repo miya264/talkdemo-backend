@@ -12,3 +12,5 @@ else
     exit 1
 fi
 
+# PyAudio の手動インストール（Poetry のインストール後に実行）
+pip install --no-cache-dir --force-reinstall pyaudio --global-option="build_ext" --global-option="-I/usr/include" --global-option="-L/usr/lib"
