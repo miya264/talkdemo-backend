@@ -1,25 +1,19 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 import openai
 import os
 from dotenv import load_dotenv
-import time
-import sounddevice as sd
-import numpy as np
-import soundfile as sf
 from pathlib import Path
 from fastapi.responses import JSONResponse
-import io
-import tempfile
-import glob
+import mimetypes
+import time
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,122 +26,67 @@ if api_key is None:
     raise ValueError("APIキーが設定されていません")
 
 client = openai.OpenAI(api_key=api_key)
-chat_history = {}
 
-audio_output_dir = Path("static/audio")
-audio_output_dir.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# 静的ファイルとして音声ファイルを提供
+AUDIO_OUTPUT_DIR = Path("static/audio")
+AUDIO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
 app.mount("/voice", StaticFiles(directory="static/audio"), name="voice")
 
-class AudioRequest(BaseModel):
-    session_id: str
-    message: str
+@app.post("/upload-audio/")
+async def upload_audio(file: UploadFile = File(...)):
+    print(f"📤 受信したファイル名: {file.filename}")
+    print(f"📤 受信したファイルのコンテンツタイプ: {file.content_type}")
 
-def record_audio(fs=16000, max_duration=10, silence_threshold=2.0, amplitude_threshold=0.01):
-    print("Recording...")
-    start_time = time.time()
-    recorded_audio = []
-    silent_time = 0
-    
-    with sd.InputStream(samplerate=fs, channels=1) as stream:
-        while time.time() - start_time < max_duration:
-            data, _ = stream.read(int(fs * 0.1))  # 100msごとにデータ取得
-            recorded_audio.append(data)
-            
-            if np.max(np.abs(data)) < amplitude_threshold:
-                silent_time += 0.1
-                if silent_time >= silence_threshold:
-                    break
-            else:
-                silent_time = 0
-    
-    processing_time = time.time() - start_time
-    print(f"Recording completed in {processing_time:.2f} seconds")
-    
-    if not recorded_audio:
-        print("Error: No audio data recorded")
-        return None
-    
-    audio_data = np.concatenate(recorded_audio, axis=0)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
-        sf.write(temp_audio.name, audio_data, fs, format='WAV', subtype='PCM_16')
-        file_path = temp_audio.name
-    
-    print("Audio recorded at:", file_path)
-    return file_path
-
-def transcribe(file_path):
-    start_time = time.time()
     try:
-        if not file_path or not os.path.exists(file_path):
+        file_path = UPLOAD_DIR / file.filename
+
+        with file_path.open("wb") as buffer:
+            buffer.write(await file.read())
+
+        print("✅ ファイル保存成功:", file_path)
+
+        mime_type, _ = mimetypes.guess_type(str(file_path))
+        print(f"📄 ファイル MIME タイプ: {mime_type}")
+
+        transcribed_text = transcribe_audio(file_path)
+        if not transcribed_text:
+            print("⚠️ 文字起こしに失敗しました")
+            return JSONResponse({"error": "文字起こしに失敗しました"}, status_code=500)
+
+        ai_response, audio_url = generate_ai_response(transcribed_text)
+        
+        return {"transcribed_text": transcribed_text, "ai_response": ai_response, "audio_url": f"{audio_url}"}
+
+    except Exception as e:
+        print("❌ エラー発生:", e)
+        return JSONResponse({"error": f"音声アップロードエラー: {str(e)}"}, status_code=500)
+
+def transcribe_audio(file_path: Path):
+    try:
+        print(f"📄 文字起こしを開始: {file_path}")
+
+        if not file_path.exists():
+            print("❌ 音声ファイルが見つかりません")
             return ""
-        print("Processing audio file:", file_path)
+
         with open(file_path, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
-                file=audio_file,
-                language="ja"
+                file=audio_file
             )
-        processing_time = time.time() - start_time
-        print(f"Transcription completed in {processing_time:.2f} seconds")
+
+        print(f"✅ 文字起こし完了: {transcript.text}")
         return transcript.text
     except Exception as e:
         print("Transcription Error:", e)
         return ""
-    finally:
-        os.remove(file_path)
 
-def talkgpt(text):
-    start_time = time.time()
+def generate_ai_response(text: str):
     try:
-        if not text:
-            return None
-        speech_file_path = audio_output_dir / f"response_{int(time.time())}.mp3"
-        response_audio = client.audio.speech.create(
-            model="tts-1",
-            voice="alloy",
-            input=text,
-        )
-        response_audio.stream_to_file(str(speech_file_path))
-        
-        if not os.path.exists(speech_file_path):
-            print("Error: Speech file was not saved correctly")
-            return None
-        
-        processing_time = time.time() - start_time
-        print(f"TTS completed in {processing_time:.2f} seconds")
-        print(f"Speech file saved at: {speech_file_path}")
-        return speech_file_path
-    except Exception as e:
-        print("TTS Error:", e)
-        return None
-
-@app.post("/onsei/")
-async def onsei():
-    start_time = time.time()
-    file_path = record_audio()
-    if file_path is None:
-        return {"error": "音声の録音に失敗しました"}
-    result_onsei = transcribe(file_path)
-    if not result_onsei:
-        return {"error": "音声のテキスト変換に失敗しました"}
-    total_time = time.time() - start_time
-    print(f"Total time for onsei: {total_time:.2f} seconds")
-    return {"transcribed_text": result_onsei}
-
-@app.post("/audio/")
-async def audio(request: AudioRequest):
-    start_time = time.time()
-    session_id = request.session_id
-    message = request.message.strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="メッセージが空です")
-    if session_id not in chat_history:
-        chat_history[session_id] = []
-    chat_history[session_id].append({"role": "user", "content": message})
-    print("Sending to OpenAI:", chat_history[session_id])
-    try:
+        print("🤖 AI応答生成中...")
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -160,19 +99,22 @@ async def audio(request: AudioRequest):
                     "必要に応じて、『それはどんなときに強く感じますか？』『それが続くとどんな影響がありそうですか？』などの質問を活用してください。\n"
                     "最大20往復で終了するように調整してください。"
                 )},
-                *chat_history[session_id][-10:]
-            ],
-            stream=True,
+                {"role": "user", "content": text}
+            ]
         )
-        response_text = "".join([chunk.choices[0].delta.content for chunk in response if chunk.choices[0].delta.content])
+        ai_text = response.choices[0].message.content.strip()
+        print(f"✅ AI応答: {ai_text}")
+
+        # 音声生成
+        speech_file = AUDIO_OUTPUT_DIR / f"response_{int(time.time())}.mp3"
+        audio_response = client.audio.speech.create(
+            model="tts-1",
+            voice="alloy",
+            input=ai_text,
+        )
+        audio_response.stream_to_file(str(speech_file))
+
+        return ai_text, f"/voice/{speech_file.name}"
     except Exception as e:
-        print("ChatGPT Error:", e)
-        raise HTTPException(status_code=500, detail="AIの応答生成に失敗しました")
-    chat_history[session_id].append({"role": "assistant", "content": response_text})
-    print("Received from OpenAI:", response_text)
-    speech_file_path = talkgpt(response_text)
-    total_time = time.time() - start_time
-    print(f"Total time for audio processing: {total_time:.2f} seconds")
-    if not speech_file_path:
-        raise HTTPException(status_code=500, detail="音声生成に失敗しました")
-    return JSONResponse({"text": response_text, "audio_url": f"/voice/{speech_file_path.name}"})
+        print("AI Response Error:", e)
+        return "", ""
