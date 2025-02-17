@@ -1,11 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# システムのアップデートと PortAudio のインストール
-apt-get update && apt-get install -y portaudio19-dev
+# Render の環境では root 権限がないため sudo を使う
+sudo apt-get update -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false
+sudo apt-get install -y portaudio19-dev
 
-# 確認用のログ出力（重要！）
-dpkg -l | grep portaudio
-
-# Python のパッケージをインストール
-pip install --upgrade pip
-pip install -r requirements.txt
+# poetry を使っている場合
+poetry install
