@@ -37,32 +37,31 @@ app.mount("/voice", StaticFiles(directory="static/audio"), name="voice")
 
 @app.post("/upload-audio/")
 async def upload_audio(file: UploadFile = File(...)):
-    print(f"📤 受信したファイル名: {file.filename}")
-    print(f"📤 受信したファイルのコンテンツタイプ: {file.content_type}")
-
     try:
         file_path = UPLOAD_DIR / file.filename
+        temp_file_path = file_path.with_suffix(".webm")
 
-        with file_path.open("wb") as buffer:
+        # 既存のファイルがある場合は削除 (ゴミデータ対策)
+        temp_file_path.unlink(missing_ok=True)
+
+        with temp_file_path.open("wb") as buffer:
             buffer.write(await file.read())
 
-        print("✅ ファイル保存成功:", file_path)
+        print("✅ ファイル保存成功:", temp_file_path)
 
-        mime_type, _ = mimetypes.guess_type(str(file_path))
-        print(f"📄 ファイル MIME タイプ: {mime_type}")
-
-        transcribed_text = transcribe_audio(file_path)
+        transcribed_text = transcribe_audio(temp_file_path)
         if not transcribed_text:
             print("⚠️ 文字起こしに失敗しました")
             return JSONResponse({"error": "文字起こしに失敗しました"}, status_code=500)
 
         ai_response, audio_url = generate_ai_response(transcribed_text)
-        
         return {"transcribed_text": transcribed_text, "ai_response": ai_response, "audio_url": f"{audio_url}"}
-
+    
     except Exception as e:
         print("❌ エラー発生:", e)
         return JSONResponse({"error": f"音声アップロードエラー: {str(e)}"}, status_code=500)
+
+
 
 def transcribe_audio(file_path: Path):
     try:
@@ -77,12 +76,12 @@ def transcribe_audio(file_path: Path):
                 model="whisper-1",
                 file=audio_file
             )
-
         print(f"✅ 文字起こし完了: {transcript.text}")
         return transcript.text
     except Exception as e:
         print("Transcription Error:", e)
         return ""
+
 
 def generate_ai_response(text: str):
     try:
@@ -90,15 +89,24 @@ def generate_ai_response(text: str):
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": (
-                    "あなたは優しく知的なヘルスケアカウンセラーです。\n"
-                    "ユーザーの健康に関する悩みを深掘りし、自己理解を促す質問をします。\n"
-                    "あなたの役割は、助言をするのではなく、共感しながら適切な質問を通じてユーザーが自分自身について気づきを得ることです。\n"
-                    "質問は簡潔で、ユーザーの発言を反映したものにしてください。\n"
-                    "心・身体・性的な悩みがどのように関係しているのかを、ユーザーが自分で考えられるようにサポートしてください。\n"
-                    "必要に応じて、『それはどんなときに強く感じますか？』『それが続くとどんな影響がありそうですか？』などの質問を活用してください。\n"
-                    "最大5往復で終了するように調整してください。"
-                )},
+                {
+                    "role": "system",
+                    "content": "あなたは優しく知的なヘルスケアカウンセラーです。\n"
+                        "ユーザーの健康に関する悩みを深掘りし、自己理解を促す質問をします。\n"
+                        "あなたの役割は、助言をするのではなく、共感しながら適切な質問を通じてユーザーが自分自身について気づきを得ることです。\n"
+                        "質問は簡潔で、ユーザーの発言を反映したものにしてください。\n"
+                        "心・身体・性的な悩みがどのように関係しているのかを、ユーザーが自分で考えられるようにサポートしてください。\n"
+                        "必要に応じて、『それはどんなときに強く感じますか？』『それが続くとどんな影響がありそうですか？』などの質問を活用してください。\n"
+                        "\n"
+                        "【会話の回数管理】\n"
+                        "- ユーザーが話すたびに、発言回数をカウントしてください。\n"
+                        "- **5回目の発言を受け取ったら、新しい質問をせず、「これまでのやり取りをまとめますか？」と尋ねてください。**\n"
+                        "- ユーザーが「はい」と答えた場合、会話全体を要約してください。\n"
+                        "- まとめには、ユーザーが話した内容のポイント、気づき、次に取るべき行動を含めてください。\n"
+                        "- 「いいえ」と答えた場合、「また気が向いたらまとめを提示できますので、お気軽にお知らせください。」と答えてください。\n"
+                        "- まとめの後、会話を終了してください。"
+                },
+
                 {"role": "user", "content": text}
             ]
         )
